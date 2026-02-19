@@ -1,313 +1,130 @@
 # 🗺️ Concept Cartographer
 
-**Interactive Knowledge Mapping powered by LLMs**
+**Interactive knowledge mapping — ask questions and watch concepts emerge as a graph.**
 
-An intelligent chat interface that extracts concepts and relationships from conversations and visualizes them as dynamic knowledge graphs in real-time.
+Concept Cartographer is a Gradio app that turns a chat into a growing *concept map*: it extracts key concepts and relationships from your conversation and renders them as a knowledge graph you can export.
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
-![Gradio](https://img.shields.io/badge/gradio-6.0+-orange.svg)
-
----
-
-## 🎯 Overview
-
-Concept Cartographer bridges natural language conversation with formal knowledge representation. As you discuss topics with the AI, it automatically:
-
-1. **Extracts key concepts** from the conversation
-2. **Identifies relationships** between concepts  
-3. **Builds a knowledge graph** that grows with each exchange
-4. **Visualizes the ontology** in real-time
-
-Built by [Dagny Barbierski](https://barbhs.com) | Cognitive Science + AI
-
-### Why This Exists
-
-Most LLM chat interfaces are ephemeral—knowledge disappears after the conversation ends. Concept Cartographer makes implicit knowledge structures explicit and exportable, turning conversations into reusable ontologies.
-
-**Use cases:**
-- Learning new topics and seeing conceptual connections
-- Brainstorming and idea mapping
-- Research literature synthesis
-- Interview/presentation prep
-- Building domain-specific knowledge bases
+- **Repo:** https://github.com/dagny099/concept-cartography-gradio  
+- **Live demo:** https://ce668c1e9bcc6265ae.gradio.live/  
+- **Built by:** Barbara Hidalgo-Sotelo (Cognitive Science + AI)  
+- **LinkedIn:** https://www.linkedin.com/in/barbara-hidalgo-sotelo/
 
 ---
 
-## ✨ Features
+## What it does
 
-- **🤖 Dual LLM Workflow**: Separate calls for chat responses and concept extraction
-- **🎨 Real-time Visualization**: NetworkX + Matplotlib graph rendering
-- **🏷️ Domain-Aware Extraction**: Optimized prompts for AI/ML, Cognitive Science, Healthcare, Business, and General domains
-- **💾 Stateful Architecture**: Graph persists and grows across conversation turns
-- **📊 Structured Outputs**: JSON-mode extraction for reliable parsing
-- **💰 Cost-Optimized**: Uses GPT-4o-mini for 94% cost reduction vs GPT-4
-- **📤 Export Capability**: Download your knowledge graph as JSON
-- **🎯 Guided UX**: Example prompts and domain selection reduce "blank canvas" paralysis
+As you chat, the app:
+
+1. **Responds conversationally** to your question
+2. **Extracts structured concepts + relationships** from the conversation
+3. **Updates a persistent graph** across turns
+4. **Visualizes the graph** in real time
+5. Lets you **export the graph as JSON** for downstream use (Neo4j, notes, outlines, retrieval, etc.)
+
+This is intentionally a “small, sharp demo” focused on *stateful* LLM tooling (not just a stateless chatbot).
 
 ---
 
-## 🚀 Quick Start
+## Quick start (local)
 
 ### Prerequisites
+- Python **3.8+**
+- An **OpenAI API key**
 
-- Python 3.8+
-- OpenAI API key
-
-### Installation
-
+### Install
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/concept-cartographer.git
-cd concept-cartographer
+git clone https://github.com/dagny099/concept-cartography-gradio.git
+cd concept-cartography-gradio
 
-# Create virtual environment
 python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
-# Install dependencies
 pip install -r requirements.txt
+```
 
-# Set up environment variables
+### Configure environment
+```bash
 cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY
+# then edit .env and set: OPENAI_API_KEY=...
 ```
 
-### Running Locally
-
+### Run
 ```bash
 python concept_cartographer.py
 ```
 
-The app will launch at `http://localhost:7860` with a public Gradio share URL.
+The app starts at `http://localhost:7860`. If Gradio sharing is enabled, you’ll also see a public `gradio.live` link printed to the console.
 
 ---
 
-## 📖 Usage
+## Versions
 
-### Basic Workflow
+This project is currently developed and tested on **Gradio 6.6**.
 
-1. **Select a domain** from the dropdown (AI/ML, Cognitive Science, etc.)
-2. **Ask a question** or click an example prompt
-3. **Watch the graph** update in real-time as concepts are extracted
-4. **Continue the conversation** to expand your knowledge map
-5. **Export** your ontology as JSON when done
-
-### Example Session
-
-```
-Domain: AI/ML
-Question: "How do neural networks learn?"
-
-→ Graph shows: Neural Networks, Backpropagation, Gradient Descent, 
-   Loss Function, Weights, Training Data
-
-Question: "How does this relate to deep learning?"
-
-→ Graph expands with: Deep Learning, Hidden Layers, Feature Learning,
-   plus relationships linking to existing concepts
-```
-
-### Tips for Best Results
-
-- **Start broad, then narrow**: Begin with overview questions, drill down into specifics
-- **Use the domain selector**: Improves extraction quality for specialized topics
-- **Clear the graph** when switching to unrelated topics
-- **Export frequently**: Save your knowledge graphs for later reference
-
----
-
-## 🏗️ Architecture
-
-### Technology Stack
-
-- **Frontend**: Gradio 6.0+ (Blocks API for custom layouts)
-- **LLM**: OpenAI GPT-4o-mini (cost-optimized)
-- **Graph**: NetworkX (data structure) + Matplotlib (visualization)
-- **State Management**: Global Python object (ephemeral per session)
-
-### Data Flow
-
-```
-User Input
-    ↓
-Chat LLM Call (GPT-4o-mini)
-    ↓
-Assistant Response
-    ↓
-Concept Extraction LLM Call (GPT-4o-mini + JSON mode)
-    ↓
-Update NetworkX Graph
-    ↓
-Render Matplotlib Visualization
-    ↓
-Display to User
-```
-
-### Key Design Decisions
-
-**Why two LLM calls?**
-- Separates user-facing chat quality from extraction quality
-- Allows different prompts/temperatures for each task
-- Enables hybrid model strategies (e.g., GPT-4 for chat, mini for extraction)
-
-**Why structured JSON outputs?**
-- Guarantees parseable responses (no regex hacks)
-- Enables programmatic use of extracted data
-- Foundation for building real tools vs chatbots
-
-**Why global state?**
-- Simple for POC/demo purposes
-- Keeps graph persistent within session
-- Easy to upgrade to database for production
-
----
-
-## 💰 Cost Analysis
-
-Using GPT-4o-mini for both chat and extraction:
-
-| Usage | Cost |
-|-------|------|
-| Per message | ~$0.004 |
-| 100 messages | ~$0.40 |
-| 1000 messages | ~$4.00 |
-
-**Comparison**: Using GPT-4 for both would cost **$63** for 1000 messages (94% more expensive).
-
----
-
-## 🔧 Configuration
-
-### Environment Variables
-
+If you run into UI differences across Gradio versions, pin Gradio explicitly:
 ```bash
-OPENAI_API_KEY=your_key_here
-```
-
-### Customization Options
-
-**Change LLM models:**
-```python
-# In chat_and_extract()
-model="gpt-4o"  # Use more powerful model for chat
-
-# In extract_concepts_and_relationships()
-model="gpt-4o-mini"  # Keep mini for extraction
-```
-
-**Adjust graph layout:**
-```python
-# In render_graph()
-pos = nx.spring_layout(concept_graph, k=2, iterations=50)
-# Try: nx.kamada_kawai_layout() for hierarchical
-#      nx.circular_layout() for simpler
-```
-
-**Add custom domains:**
-```python
-domain_hints = {
-    "AI/ML": "Prioritize: algorithms, architectures...",
-    "Your Domain": "Prioritize: your custom guidance...",
-}
+pip install "gradio==6.6"
 ```
 
 ---
 
-## 📦 Deployment
+## How to use
 
-### Local Development
-```bash
-python concept_cartographer.py
-```
-
-### Production (EC2/Cloud)
-
-See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed instructions on:
-- Systemd service setup
-- Nginx reverse proxy configuration
-- SSL with Let's Encrypt
-- Custom domain setup
-
-**Quick deploy:**
-```bash
-# As systemd service
-sudo systemctl start concept-cartographer
-
-# View logs
-sudo journalctl -u concept-cartographer -f
-```
+1. Pick a **Domain** (e.g., AI/ML or Cognitive Science).  
+   Domain selection nudges extraction toward domain-relevant concepts and relation types.
+2. Ask a question (or click a starter prompt).
+3. Watch the **Knowledge Graph** grow as you continue the conversation.
+4. Use **Export Graph JSON** to download the current graph state.
 
 ---
 
-## 🤝 Contributing
+## What gets exported
 
-Contributions are welcome! Areas for improvement:
-
-- [ ] Add authentication/user sessions
-- [ ] Persist graphs to database (PostgreSQL + pgvector)
-- [ ] Interactive graph exploration (zoom, click nodes for details)
-- [ ] Support for additional LLM providers (Anthropic, local models)
-- [ ] Export to other formats (GraphML, Cypher, RDF)
-- [ ] Graph diff/merge capabilities
-- [ ] Collaborative multi-user graphs
-
-### Development Setup
-
-```bash
-# Install dev dependencies
-pip install -r requirements-dev.txt
-
-# Run tests
-pytest tests/
-
-# Format code
-black concept_cartographer.py
-
-# Type checking
-mypy concept_cartographer.py
-```
+The export is meant to be easy to pipe into other workflows. Expect:
+- A concept list (nodes)
+- Relationship triples (edges)
+- Optional metadata that can support downstream enrichment (e.g., sources, domain, timestamps)
 
 ---
 
-## 📝 License
+## Architecture (high level)
 
-MIT License - see [LICENSE](LICENSE) file for details.
+Concept Cartographer makes **two LLM calls per user turn**:
+- **Chat call** → generates a helpful response
+- **Extraction call** → returns structured JSON (concepts + relations) that updates the graph
 
----
-
-## 🙏 Acknowledgments
-
-- **OpenAI** for GPT models and structured output capabilities
-- **Gradio** team for the excellent UI framework
-- **NetworkX** developers for robust graph algorithms
-- Inspired by semantic network research in cognitive science
+The graph is held in app state and re-rendered each turn.
 
 ---
 
-## 📧 Contact
+## Deployment
 
-**Dagny Barbierski**
-- Website: [barbhs.com](https://barbhs.com)
-- GitHub: [@yourusername](https://github.com/yourusername)
-- LinkedIn: [Your LinkedIn](https://linkedin.com/in/yourprofile)
+A lightweight EC2 + systemd deployment guide is included:
 
----
-
-## 🔗 Related Projects
-
-- [ConvoScope](https://github.com/yourusername/convoscope) - Multi-LLM conversation management
-- [ChronoScope](https://github.com/yourusername/chronoscope) - Timeline visualization from documents
+- See `DEPLOYMENT.md` for an end-to-end walkthrough (venv setup, environment file, systemd service, logs).
 
 ---
 
-## 📊 Project Stats
+## Contributing
 
-- **Lines of Code**: ~350
-- **Development Time**: ~2 hours (including optimization)
-- **Dependencies**: 5 core packages
-- **Cost per 1K messages**: ~$4 (using GPT-4o-mini)
+Contributions are welcome, especially improvements that keep the demo:
+- **fast**
+- **visually clear**
+- **cognitively informed**
+- **maintainable**
+
+Start with `CONTRIBUTING.md` for guidelines and suggested areas of work.
 
 ---
 
-**Built with ❤️ by a cognitive scientist who builds things people actually use**
+## License
+
+MIT — see `LICENSE`.
+
+---
+
+## Contact
+
+Barbara Hidalgo-Sotelo  
+- GitHub: https://github.com/dagny099  
+- LinkedIn: https://www.linkedin.com/in/barbara-hidalgo-sotelo/  
