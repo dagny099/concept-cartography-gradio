@@ -106,6 +106,23 @@ def build_favicon_head() -> str:
 FAVICON_HEAD = build_favicon_head()
 
 
+def _extract_text(content) -> str:
+    """
+    Normalize message content from either a plain string or Gradio 6.x's
+    list-of-dicts format: [{"text": "...", "type": "text"}, ...].
+    Gradio 6.x converts string content to this list format during its
+    internal serialize/deserialize cycle between chained event handlers.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            item.get("text", "") if isinstance(item, dict) else str(item)
+            for item in content
+        )
+    return str(content) if content is not None else ""
+
+
 def adaptive_concept_cap(existing_node_count: int) -> int:
     """Adaptive cap to keep the graph readable as it grows."""
     if existing_node_count < 25:
@@ -190,12 +207,19 @@ def chat_and_extract(message, history, domain="General"):
     for msg in history:
         if isinstance(msg, dict) and "role" in msg and "content" in msg:
             role = msg["role"]
-            # For user messages, send the raw text (not the decorated display text)
-            content = msg.get("raw", msg["content"]) if role == "user" else msg["content"]
-            # For assistant messages, send only the summary back as context
-            # (the full display markdown would confuse the model)
-            if role == "assistant":
-                content = msg.get("raw_summary", content)
+            if role == "user":
+                # Prefer "raw" key; fall back to stripping the lens annotation.
+                # Gradio 6.x drops custom keys and converts content to list-of-dicts.
+                raw = msg.get("raw")
+                if raw:
+                    content = _extract_text(raw)
+                else:
+                    display = _extract_text(msg["content"])
+                    lens_suffix = f" — {domain} lens"
+                    content = display.removesuffix(lens_suffix)
+            else:
+                # For assistant messages, send only the concise narrative as context.
+                content = _extract_text(msg.get("raw_summary") or msg["content"])
             messages.append({"role": role, "content": content})
 
     messages.append({"role": "user", "content": message})
@@ -610,7 +634,7 @@ with gr.Blocks(title="Concept Cartographer") as demo:
         # Check if max turns reached - if so, don't process
         if current_turn_count >= MAX_TURNS:
             # Remove the pending ellipsis message
-            if chat_history and chat_history[-1]["role"] == "assistant" and chat_history[-1]["content"] == PENDING_ASSISTANT_TEXT:
+            if chat_history and chat_history[-1].get("role") == "assistant" and _extract_text(chat_history[-1].get("content")) == PENDING_ASSISTANT_TEXT:
                 chat_history = chat_history[:-1]
             return (
                 chat_history,  # No update
@@ -622,14 +646,16 @@ with gr.Blocks(title="Concept Cartographer") as demo:
             )
 
         # Guard: history must have at least [user_msg, pending_"..."] at the tail
+        # Use _extract_text() because Gradio 6.x converts string content to a
+        # list-of-dicts [{"text": "...", "type": "text"}] during its round-trip.
         if (
             len(chat_history) < 2
             or chat_history[-1].get("role") != "assistant"
-            or chat_history[-1].get("content") != PENDING_ASSISTANT_TEXT
+            or _extract_text(chat_history[-1].get("content")) != PENDING_ASSISTANT_TEXT
             or chat_history[-2].get("role") != "user"
         ):
             # Unexpected state — remove dangling placeholder if present and bail
-            if chat_history and chat_history[-1].get("content") == PENDING_ASSISTANT_TEXT:
+            if chat_history and _extract_text(chat_history[-1].get("content")) == PENDING_ASSISTANT_TEXT:
                 chat_history = chat_history[:-1]
             return (
                 chat_history,
@@ -640,8 +666,16 @@ with gr.Blocks(title="Concept Cartographer") as demo:
                 gr.update(),
             )
 
-        # Get the last user message (second to last, since last is the pending ellipsis)
-        message = chat_history[-2].get("raw", chat_history[-2]["content"])
+        # Get the last user message (second to last, since last is the pending ellipsis).
+        # Prefer the "raw" key (set by add_user_message) but fall back to stripping
+        # the lens annotation Gradio strips custom dict keys during its round-trip.
+        raw = chat_history[-2].get("raw")
+        if raw:
+            message = _extract_text(raw)
+        else:
+            display_content = _extract_text(chat_history[-2].get("content", ""))
+            lens_suffix = f" — {current_domain} lens"
+            message = display_content.removesuffix(lens_suffix)
 
         # Get bot response (single structured call — returns formatted display text)
         display_text = chat_and_extract(message, chat_history[:-2], current_domain)
@@ -857,7 +891,7 @@ if __name__ == "__main__":
     demo.launch(
         head=FAVICON_HEAD + ga_head,  # Combine favicon and GA tracking
         server_name="0.0.0.0",
-        server_port=7860,
+        server_port=7870,
 #        share=True,
         show_error=True,
         theme=gr.themes.Soft(),  # Moved here for Gradio 6.0
