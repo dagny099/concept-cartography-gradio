@@ -1,11 +1,13 @@
 import gradio as gr
 import os
 import json
+import base64
+import hashlib
+import tempfile
 from openai import OpenAI
 import networkx as nx
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
-import io
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -24,7 +26,84 @@ total_api_calls = 0
 # Turn limiting for LinkedIn demo
 current_turn_count = 0
 MAX_TURNS = 3
-LINKEDIN_POST_URL = "https://www.linkedin.com/in/barbara-hidalgo-sotelo/"  # Set to your LinkedIn post URL if desired
+LINKEDIN_POST_URL = "https://www.linkedin.com/in/barbara-hidalgo-sotelo/"
+
+# UI assets
+PENDING_ASSISTANT_TEXT = "..."
+
+# Domain-specific example prompts — curated for graph variety and "aha" moments
+DOMAIN_EXAMPLES: dict[str, list[str]] = {
+    "AI/ML": [
+        "How do neural networks learn?",
+        "Explain attention mechanisms in transformers",
+        "What is transfer learning?",
+        "How does reinforcement learning work?",
+    ],
+    "Cognitive Science": [
+        "How does working memory differ from long-term memory?",
+        "What is the dual-process theory of thinking?",
+        "How do bilinguals switch between languages?",
+        "What role does attention play in perception?",
+    ],
+    "Healthcare": [
+        "How does the immune system fight infection?",
+        "What is the difference between a virus and a bacterium?",
+        "How do clinical trials work?",
+        "What is precision medicine?",
+    ],
+    "Business": [
+        "What is a platform business model?",
+        "How do network effects create moats?",
+        "What makes OKRs different from KPIs?",
+        "How does design thinking apply to strategy?",
+    ],
+    "General": [
+        "How does the greenhouse effect work?",
+        "What is systems thinking?",
+        "How do supply chains create resilience?",
+        "What is the relationship between language and thought?",
+    ],
+}
+
+# ── Phase 1 Response Cache ──────────────────────────────────────────
+# In-memory dict: hash(model + system_prompt + user_message + domain) → {chat, extraction}
+# Survives across turns but resets on server restart. Zero dependencies.
+# For the 4 pre-selected example prompts this means instant responses on repeat use.
+_response_cache: dict[str, dict] = {}
+
+def _cache_key(model: str, system: str, user_msg: str, domain: str) -> str:
+    """Deterministic cache key from the inputs that affect the response."""
+    blob = f"{model}|{system}|{user_msg}|{domain}"
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+def build_favicon_head() -> str:
+    """
+    Deployment-proof favicon:
+    - Reads a local icon from ./assets/
+    - Embeds it as a base64 data URI in the <head>, so it works on Gradio share links,
+      reverse proxies, and most static hosting setups without extra routing.
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(base_dir, "assets", "favicon.png"),
+        os.path.join(base_dir, "assets", "favicon.ico"),
+        os.path.join(base_dir, "assets", "icon.png"),
+        os.path.join(base_dir, "assets", "icon.ico"),
+    ]
+    for path in candidates:
+        try:
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    raw = f.read()
+                b64 = base64.b64encode(raw).decode("ascii")
+                mime = "image/png" if path.lower().endswith(".png") else "image/x-icon"
+                return f'<link rel="icon" type="{mime}" href="data:{mime};base64,{b64}">'
+        except Exception:
+            # If anything goes wrong, silently fall back to no favicon rather than crashing the app
+            pass
+    return ""
+
+FAVICON_HEAD = build_favicon_head()
 
 
 def adaptive_concept_cap(existing_node_count: int) -> int:
@@ -36,155 +115,136 @@ def adaptive_concept_cap(existing_node_count: int) -> int:
     return 6
 
 
-def extract_concepts_and_relationships(text, domain="General", max_concepts=8):
-    """
-    Use LLM to extract concepts and relationships from text.
-    Optimized version with domain awareness, structured outputs, and robust error handling.
-    
-    Args:
-        text: Conversation text to analyze
-        domain: Domain focus for better extraction (AI/ML, Cognitive Science, etc.)
-        
-    Returns: dict with 'concepts' and 'relationships'
-    """
-    global total_tokens_used, total_api_calls
-    
-    # Domain-specific extraction hints with category guidance
+def _build_system_prompt(domain: str, max_concepts: int) -> str:
+    """Single system prompt: one call returns narrative + ontology."""
     domain_hints = {
-        "AI/ML": "Include algorithms (Method), architectures (Entity), theories (Theory), and processes (Process)",
-        "Cognitive Science": "Include brain regions (Entity), cognitive theories (Theory), mental processes (Process), and properties (Property)",
-        "Healthcare": "Include conditions (Entity), treatments (Method), symptoms (Property), and processes (Process)",
-        "Business": "Include processes (Process), metrics (Property), strategies (Method), and stakeholders (Entity)",
-        "General": "Include diverse types: entities, processes, theories, methods, and properties"
+        "AI/ML": "algorithms (Method), architectures (Entity), theories (Theory), processes (Process)",
+        "Cognitive Science": "brain regions (Entity), cognitive theories (Theory), mental processes (Process), properties (Property)",
+        "Healthcare": "conditions (Entity), treatments (Method), symptoms (Property), processes (Process)",
+        "Business": "processes (Process), metrics (Property), strategies (Method), stakeholders (Entity)",
+        "General": "diverse types: entities, processes, theories, methods, properties",
     }
-    
     hint = domain_hints.get(domain, domain_hints["General"])
-    
-    # Simplified prompt to reduce JSON errors
-    prompt = f"""Extract key concepts and relationships. {hint}
 
-Text: {text}
+    return f"""You are a knowledge-graph assistant using a {domain} lens. For every user message, return ONLY valid JSON:
 
-Return valid JSON with this exact structure:
 {{
+  "narrative": "A 2-4 sentence natural-language explanation that answers the question while weaving in the key concepts and how they connect. Write as if explaining to a smart colleague — not a list, but a flowing explanation that makes the graph intuitive.",
   "concepts": [
-    {{"name": "Concept1", "category": "Entity"}},
-    {{"name": "Concept2", "category": "Process"}}
+    {{"name": "ShortName", "category": "Entity|Process|Theory|Method|Property"}}
   ],
   "relationships": [
-    {{"from": "Concept1", "to": "Concept2", "type": "enables"}}
+    {{"from": "ConceptA", "to": "ConceptB", "type": "causes|requires|part_of|type_of|enables"}}
   ]
 }}
 
 Rules:
-- Up to {max_concepts} concepts maximum
-- Use varied categories: Entity, Process, Theory, Method, Property
-- Use specific relationship types: causes, requires, part_of, type_of, enables
-- Keep concept names short (1-3 words)
-- Avoid quotes and special characters in names"""
+- narrative: answer the question conversationally, naturally referencing the concepts by name. 2-4 sentences.
+- concepts: up to {max_concepts}. Prioritize: {hint}. Names 1-3 words.
+- relationships: only between listed concepts. Use specific types.
+- Return NOTHING outside the JSON object."""
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a precise ontology extractor. Return ONLY valid JSON, nothing else."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.1,
-            max_tokens=400,
-            response_format={"type": "json_object"}
-        )
-        
-        # Track usage
-        total_tokens_used += response.usage.total_tokens
-        total_api_calls += 1
-        
-        content = response.choices[0].message.content.strip()
-        
-        # Clean common JSON issues before parsing
-        content = content.replace("'", '"')  # Replace single quotes
-        content = content.replace('\n', ' ')  # Remove newlines that might break strings
-        
-        # Parse JSON
-        result = json.loads(content)
-        
-        # Validate and clean structure
-        if "concepts" not in result:
-            result["concepts"] = []
-        if "relationships" not in result:
-            result["relationships"] = []
-            
-        # Clean concept names (remove problematic characters)
-        for concept in result.get("concepts", []):
-            if "name" in concept:
-                # Remove quotes and clean
-                concept["name"] = concept["name"].replace('"', '').replace("'", "").strip()
-            if "category" not in concept:
-                concept["category"] = "Entity"  # Default fallback
-                
-        return result
-        
-    except json.JSONDecodeError as e:
-        print(f"⚠️ JSON parsing error: {e}")
-        if 'content' in locals():
-            print(f"Raw content: {content[:300]}...")
-        
-        # Return empty structure as fallback
-        return {
-            "concepts": [],
-            "relationships": []
-        }
-        
-    except Exception as e:
-        print(f"⚠️ Extraction error: {e}")
-        return {
-            "concepts": [],
-            "relationships": []
-        }
+
+def format_chat_display(parsed: dict) -> str:
+    """
+    Build conversation-window markdown from the structured response.
+    Shows the narrative, then a compact concept inventory.
+    """
+    narrative = parsed.get("narrative", "")
+    concepts = parsed.get("concepts", [])
+
+    parts = [narrative]
+
+    if concepts:
+        # Compact inline list: Concept (Category), Concept (Category), ...
+        tags = [f"**{c['name']}** ({c.get('category', '?')})" for c in concepts]
+        parts.append(f"\n📍 {' · '.join(tags)}")
+
+    return "\n".join(parts)
+
 
 def chat_and_extract(message, history, domain="General"):
     """
-    Main chat function that also extracts concepts.
-    Now domain-aware for better concept extraction.
-
-    Returns both the chat response AND extracted concepts.
+    Single-call architecture: one API request returns both a conversational summary
+    and structured ontology data. ~50% faster and cheaper than the old two-call approach.
     """
-    # Build conversation history for context
-    messages = [{"role": "system", "content": ("You are a helpful assistant that explains concepts clearly and concisely. "f"Use a {domain} framing lens: pick examples, terminology, and emphasis that fit this domain.")}]
+    global total_tokens_used, total_api_calls
 
-    # Handle Gradio 6.0 messages format (list of dicts with 'role' and 'content')
+    CHAT_MODEL = "gpt-4o-mini"
+    existing_node_count = len(concept_graph.nodes)
+    max_concepts = adaptive_concept_cap(existing_node_count)
+    system_prompt = _build_system_prompt(domain, max_concepts)
+
+    # ── Cache check (first-turn only: no history means deterministic output) ──
+    is_first_turn = len(history) == 0
+    if is_first_turn:
+        key = _cache_key(CHAT_MODEL, system_prompt, message, domain)
+        cache_hit = _response_cache.get(key)
+        if cache_hit:
+            update_graph(cache_hit["extraction"])
+            return cache_hit["display"]
+
+    # ── Build messages from history ──
+    messages = [{"role": "system", "content": system_prompt}]
+
     for msg in history:
         if isinstance(msg, dict) and "role" in msg and "content" in msg:
-            messages.append({"role": msg["role"], "content": msg["content"]})
+            role = msg["role"]
+            # For user messages, send the raw text (not the decorated display text)
+            content = msg.get("raw", msg["content"]) if role == "user" else msg["content"]
+            # For assistant messages, send only the summary back as context
+            # (the full display markdown would confuse the model)
+            if role == "assistant":
+                content = msg.get("raw_summary", content)
+            messages.append({"role": role, "content": content})
 
     messages.append({"role": "user", "content": message})
 
-    global total_tokens_used, total_api_calls
+    # ── Single structured API call ──
+    try:
+        response = client.chat.completions.create(
+            model=CHAT_MODEL,
+            messages=messages,
+            temperature=0.5,
+            max_tokens=500,
+            response_format={"type": "json_object"},
+        )
+        total_tokens_used += response.usage.total_tokens
+        total_api_calls += 1
 
-    # Get chat response (using cost-optimized model)
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-        temperature=0.7,
-        max_tokens=400
-    )
+        # Guard against truncation
+        if response.choices[0].finish_reason != "stop":
+            print(f"⚠️ Truncated (finish_reason={response.choices[0].finish_reason})")
+            return "Sorry, the response was cut short. Try a more specific question."
 
-    # Track usage
-    total_tokens_used += response.usage.total_tokens
-    total_api_calls += 1
+        content = response.choices[0].message.content.strip()
+        parsed = json.loads(content)
 
-    assistant_response = response.choices[0].message.content
-    
-    # Extract concepts from the full conversation turn
-    full_context = f"User: {message}\nAssistant: {assistant_response}"
-    existing_node_count = len(concept_graph.nodes)
-    max_concepts = adaptive_concept_cap(existing_node_count)
-    extracted = extract_concepts_and_relationships(full_context, domain, max_concepts=max_concepts)
+    except (json.JSONDecodeError, Exception) as e:
+        print(f"⚠️ API/parse error: {e}")
+        return "Something went wrong — please try again."
 
-    # Update the global graph
-    update_graph(extracted)
-    
-    return assistant_response
+    # ── Validate & clean ──
+    parsed.setdefault("narrative", "")
+    parsed.setdefault("concepts", [])
+    parsed.setdefault("relationships", [])
+
+    for c in parsed["concepts"]:
+        c["name"] = c.get("name", "").replace('"', '').replace("'", "").strip()
+        c.setdefault("category", "Entity")
+
+    # ── Update graph ──
+    extraction = {"concepts": parsed["concepts"], "relationships": parsed["relationships"]}
+    update_graph(extraction)
+
+    # ── Build display text ──
+    display_text = format_chat_display(parsed)
+
+    # ── Cache (first-turn only) ──
+    if is_first_turn:
+        _response_cache[key] = {"display": display_text, "extraction": extraction}
+
+    return display_text
 
 def update_graph(extracted_data):
     """
@@ -337,8 +397,7 @@ def export_graph_image():
     fig = render_graph()
 
     # Save to temporary file
-    import tempfile
-    temp_file = tempfile.NamedTemporaryFile(
+    tmp = tempfile.NamedTemporaryFile(
         delete=False,
         suffix='.png',
         prefix='concept_graph_'
@@ -346,7 +405,7 @@ def export_graph_image():
 
     # Save with high DPI for clarity
     fig.savefig(
-        temp_file.name,
+        tmp.name,
         dpi=150,
         bbox_inches='tight',
         facecolor='white',
@@ -354,14 +413,23 @@ def export_graph_image():
     )
     plt.close(fig)
 
-    return temp_file.name
+    return tmp.name
 
-def get_usage_stats():
-    """Get current token usage statistics and estimated cost."""
-    # GPT-4o-mini pricing (as of 2025): $0.15/1M input tokens, $0.60/1M output tokens
-    # Using average estimate of 0.375/1M tokens (assuming ~50% input/output split)
+def store_last_prompt(message: str) -> tuple:
+    """Store the last prompt AND reveal the reuse button."""
+    text = (message or "").strip()
+    # Return the stored text plus a visibility update for the button
+    return text, gr.update(visible=bool(text))
+
+def reuse_last_prompt(last: str) -> str:
+    return last or ""
+
+def build_usage_stats_html():
+    """Build the HTML string for the usage stats display."""
+    # GPT-4o-mini pricing: ~$0.375/1M tokens (blended input/output estimate)
     estimated_cost = (total_tokens_used / 1_000_000) * 0.375
-    return f"gpt-4o-mini · {total_api_calls} calls · {total_tokens_used:,} tokens · ${estimated_cost:.4f}"
+    stats = f"gpt-4o-mini · {total_api_calls} calls · {total_tokens_used:,} tokens · ${estimated_cost:.4f}"
+    return f'<div style="color: #888; font-size: 12px; padding: 2px 0; margin-top: 4px; text-align: left;">{stats}</div>'
 
 
 def build_turn_counter_html(count):
@@ -374,12 +442,6 @@ def build_turn_counter_html(count):
     else:
         label = "🔒 Demo limit reached"
         return f'<div class="msg-counter locked" style="text-align: right;"><span class="info-icon" title="{tooltip}">{label} ⓘ</span></div>'
-
-
-def build_usage_stats_html():
-    """Build the HTML string for the usage stats display."""
-    stats = get_usage_stats()
-    return f'<div style="color: #888; font-size: 12px; padding: 2px 0; margin-top: 4px; text-align: left;">{stats}</div>'
 
 # Build the Gradio interface using Blocks (more flexible than ChatInterface)
 custom_css = """
@@ -410,7 +472,28 @@ custom_css = """
 .msg-counter.locked {
     color: #c0392b;
 }
+
+/* Domain-tinted example buttons */
+.domain-aiml button { background: #E8F4FD !important; border-color: #45B7D1 !important; }
+.domain-aiml button:hover { background: #D1EAF8 !important; }
+.domain-cogsci button { background: #FDE8E8 !important; border-color: #FF6B6B !important; }
+.domain-cogsci button:hover { background: #FACFCF !important; }
+.domain-health button { background: #E8F8F0 !important; border-color: #98D8C8 !important; }
+.domain-health button:hover { background: #D0F0E3 !important; }
+.domain-biz button { background: #FDF5E0 !important; border-color: #F7DC6F !important; }
+.domain-biz button:hover { background: #FAECC5 !important; }
+.domain-general button { background: #F0EEFA !important; border-color: #B0A4E3 !important; }
+.domain-general button:hover { background: #E2DAEF !important; }
 """
+
+# Map domain names to CSS class names
+DOMAIN_CSS_CLASSES = {
+    "AI/ML": "domain-aiml",
+    "Cognitive Science": "domain-cogsci",
+    "Healthcare": "domain-health",
+    "Business": "domain-biz",
+    "General": "domain-general",
+}
 
 with gr.Blocks(title="Concept Cartographer") as demo:
     
@@ -427,55 +510,52 @@ with gr.Blocks(title="Concept Cartographer") as demo:
         msg = gr.Textbox(
             placeholder="Explain what an ontology is and who cares about them",
             label="Plot a Thought",
-            #info="Ask a question or enter an idea",
             scale=1
         )
         domain = gr.Dropdown(
             choices=["AI/ML", "Cognitive Science", "Healthcare", "Business", "General"],
             value="AI/ML",
             label="Choose a Lens",
-            #info="Tailors concept extraction to your field (e.g., prioritizes algorithms for AI/ML, theories for Cognitive Science)",
             scale=1
         )
+        last_prompt = gr.State("")
 
-    # Send button centered below input
     with gr.Row():
         submit_btn = gr.Button("Send ↑", variant="primary", size="lg")
 
-    # "Try these" prompt buttons — full-width row
+    # "Try these" prompt buttons — update dynamically when domain changes
     gr.Markdown("### 💡 Try these to get started:")
-    with gr.Row():
-        ex1 = gr.Button("How do neural networks learn?", size="sm")
-        ex2 = gr.Button("Explain attention mechanisms", size="sm")
-        ex3 = gr.Button("What is transfer learning?", size="sm")
-        ex4 = gr.Button("How does RL work?", size="sm")
+    with gr.Row(elem_classes=["domain-aiml"]) as example_row:
+        ex1 = gr.Button(DOMAIN_EXAMPLES["AI/ML"][0], size="sm")
+        ex2 = gr.Button(DOMAIN_EXAMPLES["AI/ML"][1], size="sm")
+        ex3 = gr.Button(DOMAIN_EXAMPLES["AI/ML"][2], size="sm")
+        ex4 = gr.Button(DOMAIN_EXAMPLES["AI/ML"][3], size="sm")
 
     # Main 2-column layout: Conversation (left) + Graph (right)
     with gr.Row():
         with gr.Column(scale=1):
             chatbot = gr.Chatbot(
-                label="Conversation",  #💬
+                label="Conversation",
                 height=400,
                 show_label=True,
             )
 
-            # Stats and counter on same line (left/right justified)
+            # Stats and counter on same line
             with gr.Row():
                 usage_display = gr.HTML(value=build_usage_stats_html(), scale=2)
                 turn_counter = gr.HTML(value=build_turn_counter_html(0), scale=1)
 
-            # "How it works" below stats
-            gr.Markdown("""
-            ### How it works:
-            1. **Chat** about any topic
-            2. **Watch** concepts get extracted
-            3. **See** relationships visualized
-            4. **Export** your ontology
-            """)
+            # "Reuse last" — hidden until a prompt has been sent
+            reuse_btn = gr.Button(
+                "↩ Reuse last prompt",
+                size="sm",
+                variant="secondary",
+                visible=False,
+            )
 
         with gr.Column(scale=1):
-            graph_plot = gr.Plot(label=" Knowledge Graph", value=render_graph()) #📊 
- 
+            graph_plot = gr.Plot(label="Knowledge Graph", value=render_graph())
+
             # Action buttons below graph
             with gr.Row():
                 clear_btn = gr.Button("Clear All", size="sm")
@@ -484,7 +564,6 @@ with gr.Blocks(title="Concept Cartographer") as demo:
 
             graph_file = gr.File(visible=False, label="Save Image", interactive=True)
 
-            # Hidden export textbox
             export_output = gr.Textbox(
                 label="Graph Export (JSON)",
                 lines=10,
@@ -493,27 +572,45 @@ with gr.Blocks(title="Concept Cartographer") as demo:
                 visible=False
             )
 
-    # Note of explanation
-    gr.Markdown("""*Colors represent concept categories. Arrows show relationships.*""")
+            with gr.Accordion("How it works", open=True):
+                gr.Markdown(
+                    "1. **Chat** about any topic\n"
+                    "2. **Watch** concepts get extracted\n"
+                    "3. **See** relationships visualized\n"
+                    "4. **Export** your ontology\n\n"
+                    "*Colors represent concept categories. Arrows show relationships.*"
+                )
     
     # Event handlers
-    def add_user_message(message, chat_history):
-        """Add user message to chat history immediately, with pending indicator."""
+    def add_user_message(message, chat_history, current_domain):
+        """
+        Add user message to chat history immediately (fast UI feedback),
+        and add a single pending assistant bubble that will be replaced.
+
+        Returns the message back into the textbox (not "") so the user
+        can see what they asked. It gets overwritten when they type next.
+        """
         if not message.strip():
-            return "", chat_history
-        chat_history.append({"role": "user", "content": message})
-        # Add a pending message that will be replaced by the actual response
-        chat_history.append({"role": "assistant", "content": "..."})
-        return "", chat_history
+            return message, chat_history
+
+        new_history = list(chat_history)
+
+        display_user = f"{message} — {current_domain} lens" if current_domain else message
+        new_history.append({"role": "user", "content": display_user, "raw": message, "lens": current_domain})
+        new_history.append({"role": "assistant", "content": PENDING_ASSISTANT_TEXT})
+        return message, new_history
 
     def respond(chat_history, current_domain):
         """Handle chat with domain awareness and turn limiting."""
         global current_turn_count
 
+        # Work on a fresh copy so Gradio sees a new list reference
+        chat_history = list(chat_history)
+
         # Check if max turns reached - if so, don't process
         if current_turn_count >= MAX_TURNS:
-            # Remove the pending "..." message
-            if chat_history and chat_history[-1]["role"] == "assistant" and chat_history[-1]["content"] == "...":
+            # Remove the pending ellipsis message
+            if chat_history and chat_history[-1]["role"] == "assistant" and chat_history[-1]["content"] == PENDING_ASSISTANT_TEXT:
                 chat_history = chat_history[:-1]
             return (
                 chat_history,  # No update
@@ -524,14 +621,38 @@ with gr.Blocks(title="Concept Cartographer") as demo:
                 gr.update(interactive=False)   # Keep button disabled
             )
 
-        # Get the last user message (second to last, since last is the "..." placeholder)
-        message = chat_history[-2]["content"]
+        # Guard: history must have at least [user_msg, pending_"..."] at the tail
+        if (
+            len(chat_history) < 2
+            or chat_history[-1].get("role") != "assistant"
+            or chat_history[-1].get("content") != PENDING_ASSISTANT_TEXT
+            or chat_history[-2].get("role") != "user"
+        ):
+            # Unexpected state — remove dangling placeholder if present and bail
+            if chat_history and chat_history[-1].get("content") == PENDING_ASSISTANT_TEXT:
+                chat_history = chat_history[:-1]
+            return (
+                chat_history,
+                render_graph(),
+                build_usage_stats_html(),
+                build_turn_counter_html(current_turn_count),
+                gr.update(),
+                gr.update(),
+            )
 
-        # Get bot response (this takes time)
-        bot_message = chat_and_extract(message, chat_history[:-2], current_domain)
+        # Get the last user message (second to last, since last is the pending ellipsis)
+        message = chat_history[-2].get("raw", chat_history[-2]["content"])
 
-        # Replace the "..." placeholder with the actual response
-        chat_history[-1]["content"] = bot_message
+        # Get bot response (single structured call — returns formatted display text)
+        display_text = chat_and_extract(message, chat_history[:-2], current_domain)
+
+        # Replace the pending ellipsis placeholder with the formatted response.
+        # Store the narrative portion so subsequent turns send only the concise
+        # narrative as history context, not the full concept inventory.
+        chat_history[-1]["content"] = display_text
+        # Narrative is everything before the 📍 concept line
+        raw_narrative = display_text.split("\n📍")[0].strip()
+        chat_history[-1]["raw_summary"] = raw_narrative
 
         # Increment turn counter
         current_turn_count += 1
@@ -575,7 +696,9 @@ with gr.Blocks(title="Concept Cartographer") as demo:
             build_usage_stats_html(),
             build_turn_counter_html(0),
             gr.update(interactive=True),  # Re-enable msg
-            gr.update(interactive=True)   # Re-enable submit
+            gr.update(interactive=True),  # Re-enable submit
+            "",                            # Reset last_prompt state
+            gr.update(visible=False),      # Hide reuse button
         )
     
     def show_export():
@@ -588,10 +711,15 @@ with gr.Blocks(title="Concept Cartographer") as demo:
     # Step 1: Add user message immediately (shows user's query right away)
     # Step 2: Get bot response (shows loading, then response)
     submit_btn.click(
+        store_last_prompt,
+        inputs=msg,
+        outputs=[last_prompt, reuse_btn],
+        show_progress="hidden",
+    ).then(
         add_user_message,
-        inputs=[msg, chatbot],
+        inputs=[msg, chatbot, domain],
         outputs=[msg, chatbot],
-        show_progress=False
+        show_progress="hidden"
     ).then(
         respond,
         inputs=[chatbot, domain],
@@ -600,26 +728,78 @@ with gr.Blocks(title="Concept Cartographer") as demo:
     )
 
     msg.submit(
+        store_last_prompt,
+        inputs=msg,
+        outputs=[last_prompt, reuse_btn],
+        show_progress="hidden",
+    ).then(
         add_user_message,
-        inputs=[msg, chatbot],
+        inputs=[msg, chatbot, domain],
         outputs=[msg, chatbot],
-        show_progress=False
+        show_progress="hidden"
     ).then(
         respond,
         inputs=[chatbot, domain],
         outputs=[chatbot, graph_plot, usage_display, turn_counter, msg, submit_btn],
         show_progress="minimal"
     )
-    
-    # Wire up example buttons
-    ex1.click(lambda: "How do neural networks learn?", outputs=[msg])
-    ex2.click(lambda: "Explain attention mechanisms in transformers", outputs=[msg])
-    ex3.click(lambda: "What is transfer learning?", outputs=[msg])
-    ex4.click(lambda: "How does reinforcement learning work?", outputs=[msg])
+    reuse_btn.click(
+        reuse_last_prompt,
+        inputs=last_prompt,
+        outputs=msg,
+        show_progress=False
+    )
+
+    # ── Auto-submit helper: clicking an example button fills + sends in one click ──
+    def _auto_submit_chain(btn):
+        """Wire a button so it populates msg, then triggers the full submit pipeline."""
+        btn.click(
+            lambda text: text,              # copy button label → msg
+            inputs=[btn],
+            outputs=[msg],
+            show_progress="hidden",
+        ).then(
+            store_last_prompt,
+            inputs=msg,
+            outputs=[last_prompt, reuse_btn],
+            show_progress="hidden",
+        ).then(
+            add_user_message,
+            inputs=[msg, chatbot, domain],
+            outputs=[msg, chatbot],
+            show_progress="hidden",
+        ).then(
+            respond,
+            inputs=[chatbot, domain],
+            outputs=[chatbot, graph_plot, usage_display, turn_counter, msg, submit_btn],
+            show_progress="minimal",
+        )
+
+    for btn in [ex1, ex2, ex3, ex4]:
+        _auto_submit_chain(btn)
+
+    # ── Domain dropdown changes → update example button labels + color tint ──
+    def update_example_labels(selected_domain):
+        prompts = DOMAIN_EXAMPLES.get(selected_domain, DOMAIN_EXAMPLES["General"])
+        css_class = DOMAIN_CSS_CLASSES.get(selected_domain, "domain-general")
+        return (
+            gr.update(value=prompts[0]),
+            gr.update(value=prompts[1]),
+            gr.update(value=prompts[2]),
+            gr.update(value=prompts[3]),
+            gr.update(elem_classes=[css_class]),
+        )
+
+    domain.change(
+        update_example_labels,
+        inputs=[domain],
+        outputs=[ex1, ex2, ex3, ex4, example_row],
+        show_progress="hidden",
+    )
     
     clear_btn.click(
         clear_all,
-        outputs=[chatbot, graph_plot, usage_display, turn_counter, msg, submit_btn],
+        outputs=[chatbot, graph_plot, usage_display, turn_counter, msg, submit_btn, last_prompt, reuse_btn],
         show_progress="minimal"
     )
     
@@ -651,16 +831,19 @@ with gr.Blocks(title="Concept Cartographer") as demo:
             build_turn_counter_html(0),
             gr.update(interactive=True),
             gr.update(interactive=True),
+            "",                            # Reset last_prompt
+            gr.update(visible=False),      # Hide reuse button
         )
 
     demo.load(
         reset_on_load,
-        outputs=[chatbot, graph_plot, usage_display, turn_counter, msg, submit_btn],
-        show_progress="hidden"
+        outputs=[chatbot, graph_plot, usage_display, turn_counter, msg, submit_btn, last_prompt, reuse_btn],
+        show_progress="minimal"
     )
 
 if __name__ == "__main__":
     demo.launch(
+        head=FAVICON_HEAD,
         server_name="0.0.0.0",
         server_port=7860,
 #        share=True,
