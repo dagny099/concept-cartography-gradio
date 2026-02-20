@@ -842,12 +842,24 @@ with gr.Blocks(title="Concept Cartographer") as demo:
     )
 
 if __name__ == "__main__":
+    # Google Analytics tracking code                                                                                                                    
+    ga_head = """                                                                                                                                       
+    <!-- Google tag (gtag.js) -->                                                                                                                       
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-489875302"></script>                                                               
+    <script>                                                                                                                                            
+    window.dataLayer = window.dataLayer || [];                                                                                                        
+    function gtag(){dataLayer.push(arguments);}                                                                                                       
+    gtag('js', new Date());                                                                                                                           
+    gtag('config', 'G-489875302');                                                                                                                    
+    </script>                                                                                                                                           
+    """                                                                                                                                                 
+  
     demo.launch(
-        head=FAVICON_HEAD,
+        head=FAVICON_HEAD + ga_head,  # Combine favicon and GA tracking
         server_name="0.0.0.0",
         server_port=7860,
 #        share=True,
         show_error=True,
         theme=gr.themes.Soft(),  # Moved here for Gradio 6.0
-        css=custom_css  # CSS also moved to launch() for Gradio 6.0
+        css=custom_css,  # CSS also moved to launch() for Gradio 6.0
     )
