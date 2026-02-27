@@ -1,7 +1,6 @@
 import gradio as gr
 import os
 import json
-import base64
 import hashlib
 import tempfile
 from openai import OpenAI
@@ -76,34 +75,15 @@ def _cache_key(model: str, system: str, user_msg: str, domain: str) -> str:
     blob = f"{model}|{system}|{user_msg}|{domain}"
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
-def build_favicon_head() -> str:
-    """
-    Deployment-proof favicon:
-    - Reads a local icon from ./assets/
-    - Embeds it as a base64 data URI in the <head>, so it works on Gradio share links,
-      reverse proxies, and most static hosting setups without extra routing.
-    """
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
-        os.path.join(base_dir, "assets", "favicon.png"),
-        os.path.join(base_dir, "assets", "favicon.ico"),
-        os.path.join(base_dir, "assets", "icon.png"),
-        os.path.join(base_dir, "assets", "icon.ico"),
-    ]
-    for path in candidates:
-        try:
-            if os.path.exists(path):
-                with open(path, "rb") as f:
-                    raw = f.read()
-                b64 = base64.b64encode(raw).decode("ascii")
-                mime = "image/png" if path.lower().endswith(".png") else "image/x-icon"
-                return f'<link rel="icon" type="{mime}" href="data:{mime};base64,{b64}">'
-        except Exception:
-            # If anything goes wrong, silently fall back to no favicon rather than crashing the app
-            pass
-    return ""
-
-FAVICON_HEAD = build_favicon_head()
+# Emoji favicon — works in all modern browsers, no image file required.
+# The SVG <text> trick renders the emoji at full size as a data URI.
+FAVICON_HEAD = (
+    '<link rel="icon" href="data:image/svg+xml,'
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>"
+    "<text y='.9em' font-size='90'>🗺️</text>"
+    "</svg>"
+    '">'
+)
 
 
 def _extract_text(content) -> str:
@@ -123,16 +103,31 @@ def _extract_text(content) -> str:
     return str(content) if content is not None else ""
 
 
-def adaptive_concept_cap(existing_node_count: int) -> int:
-    """Adaptive cap to keep the graph readable as it grows."""
-    if existing_node_count < 25:
-        return 12
-    if existing_node_count < 60:
-        return 8
-    return 6
+GRAPH_FREE_GROWTH_THRESHOLD = 30  # Below this node count, all extracted concepts are added freely
+
+# Shared category styling — used by both the graph renderer and the chat display
+CATEGORY_COLORS = {
+    "Theory":   "#FF6B6B",
+    "Method":   "#4ECDC4",
+    "Entity":   "#45B7D1",
+    "Property": "#FFA07A",
+    "Process":  "#98D8C8",
+    "Domain":   "#F7DC6F",
+    "Unknown":  "#95A5A6",
+}
+# Emoji that approximate each category's graph color for in-chat display
+CATEGORY_EMOJI = {
+    "Theory":   "🔴",
+    "Method":   "🩵",
+    "Entity":   "🔵",
+    "Property": "🟠",
+    "Process":  "🟢",
+    "Domain":   "🟡",
+    "Unknown":  "⚪",
+}
 
 
-def _build_system_prompt(domain: str, max_concepts: int) -> str:
+def _build_system_prompt(domain: str) -> str:
     """Single system prompt: one call returns narrative + ontology."""
     domain_hints = {
         "AI/ML": "algorithms (Method), architectures (Entity), theories (Theory), processes (Process)",
@@ -157,27 +152,29 @@ def _build_system_prompt(domain: str, max_concepts: int) -> str:
 
 Rules:
 - narrative: answer the question conversationally, naturally referencing the concepts by name. 2-4 sentences.
-- concepts: up to {max_concepts}. Prioritize: {hint}. Names 1-3 words.
+- concepts: up to 15. Prioritize: {hint}. Names 1-3 words.
 - relationships: only between listed concepts. Use specific types.
 - Return NOTHING outside the JSON object."""
 
 
 def format_chat_display(parsed: dict) -> str:
+    """Return the narrative paragraph only — clean, conversational prose."""
+    return parsed.get("narrative", "")
+
+
+def format_connections_panel(rels: list[dict]) -> str:
     """
-    Build conversation-window markdown from the structured response.
-    Shows the narrative, then a compact concept inventory.
+    Build the markdown for the 'Latest Connections' panel below the chatbot.
+    One relationship per line, bold concept names, plain verb in between.
+    Returns an empty string when there are no relationships.
     """
-    narrative = parsed.get("narrative", "")
-    concepts = parsed.get("concepts", [])
-
-    parts = [narrative]
-
-    if concepts:
-        # Compact inline list: Concept (Category), Concept (Category), ...
-        tags = [f"**{c['name']}** ({c.get('category', '?')})" for c in concepts]
-        parts.append(f"\n📍 {' · '.join(tags)}")
-
-    return "\n".join(parts)
+    if not rels:
+        return ""
+    lines = ["**🔗 Latest Connections**\n"]
+    for rel in rels[:6]:
+        verb = rel.get("type", "relates to").replace("_", " ")
+        lines.append(f"→ **{rel['from']}** {verb} **{rel['to']}**")
+    return "\n".join(lines)
 
 
 def chat_and_extract(message, history, domain="General"):
@@ -188,9 +185,7 @@ def chat_and_extract(message, history, domain="General"):
     global total_tokens_used, total_api_calls
 
     CHAT_MODEL = "gpt-4o-mini"
-    existing_node_count = len(concept_graph.nodes)
-    max_concepts = adaptive_concept_cap(existing_node_count)
-    system_prompt = _build_system_prompt(domain, max_concepts)
+    system_prompt = _build_system_prompt(domain)
 
     # ── Cache check (first-turn only: no history means deterministic output) ──
     is_first_turn = len(history) == 0
@@ -199,7 +194,7 @@ def chat_and_extract(message, history, domain="General"):
         cache_hit = _response_cache.get(key)
         if cache_hit:
             update_graph(cache_hit["extraction"])
-            return cache_hit["display"]
+            return cache_hit["display"], cache_hit.get("connections", "")
 
     # ── Build messages from history ──
     messages = [{"role": "system", "content": system_prompt}]
@@ -230,7 +225,7 @@ def chat_and_extract(message, history, domain="General"):
             model=CHAT_MODEL,
             messages=messages,
             temperature=0.5,
-            max_tokens=500,
+            max_tokens=750,
             response_format={"type": "json_object"},
         )
         total_tokens_used += response.usage.total_tokens
@@ -239,14 +234,14 @@ def chat_and_extract(message, history, domain="General"):
         # Guard against truncation
         if response.choices[0].finish_reason != "stop":
             print(f"⚠️ Truncated (finish_reason={response.choices[0].finish_reason})")
-            return "Sorry, the response was cut short. Try a more specific question."
+            return "Sorry, the response was cut short. Try a more specific question.", ""
 
         content = response.choices[0].message.content.strip()
         parsed = json.loads(content)
 
     except (json.JSONDecodeError, Exception) as e:
         print(f"⚠️ API/parse error: {e}")
-        return "Something went wrong — please try again."
+        return "Something went wrong — please try again.", ""
 
     # ── Validate & clean ──
     parsed.setdefault("narrative", "")
@@ -261,37 +256,68 @@ def chat_and_extract(message, history, domain="General"):
     extraction = {"concepts": parsed["concepts"], "relationships": parsed["relationships"]}
     update_graph(extraction)
 
-    # ── Build display text ──
-    display_text = format_chat_display(parsed)
+    # ── Build display text and connections panel ──
+    display_text   = format_chat_display(parsed)
+    connections_md = format_connections_panel(parsed["relationships"])
 
     # ── Cache (first-turn only) ──
     if is_first_turn:
-        _response_cache[key] = {"display": display_text, "extraction": extraction}
+        _response_cache[key] = {
+            "display":     display_text,
+            "extraction":  extraction,
+            "connections": connections_md,
+        }
 
-    return display_text
+    return display_text, connections_md
 
 def update_graph(extracted_data):
     """
     Add new concepts and relationships to the knowledge graph.
-    This maintains state across multiple conversation turns.
+
+    The LLM is no longer capped at extraction time, so we gate which concepts
+    enter the graph here instead:
+
+    - Below GRAPH_FREE_GROWTH_THRESHOLD nodes: add everything freely.
+    - Above the threshold: only add a new concept if it appears in a
+      relationship with a node already in the graph (i.e. it "anchors" to
+      the existing structure rather than creating an isolated island).
+    - Exception: if the entire extraction is disconnected from the existing
+      graph (user pivoted to a new topic), add all concepts anyway so the
+      user isn't left wondering why nothing appeared.
     """
     global concept_graph
-    
-    # Add concepts as nodes with their categories
-    for concept in extracted_data.get("concepts", []):
-        concept_graph.add_node(
-            concept["name"],
-            category=concept.get("category", "Unknown")
-        )
-    
-    # Add relationships as edges
-    for rel in extracted_data.get("relationships", []):
+
+    existing_nodes = set(concept_graph.nodes)
+    concepts = extracted_data.get("concepts", [])
+    relationships = extracted_data.get("relationships", [])
+
+    free_growth = len(existing_nodes) < GRAPH_FREE_GROWTH_THRESHOLD
+
+    if free_growth:
+        for concept in concepts:
+            concept_graph.add_node(concept["name"], category=concept.get("category", "Entity"))
+    else:
+        # Identify which incoming concepts connect to an already-existing node
+        anchored = set()
+        for rel in relationships:
+            if rel["from"] in existing_nodes:
+                anchored.add(rel["to"])
+            if rel["to"] in existing_nodes:
+                anchored.add(rel["from"])
+
+        # If nothing anchors (topic pivot), add all concepts to avoid silent no-ops
+        if not anchored:
+            for concept in concepts:
+                concept_graph.add_node(concept["name"], category=concept.get("category", "Entity"))
+        else:
+            for concept in concepts:
+                if concept["name"] in existing_nodes or concept["name"] in anchored:
+                    concept_graph.add_node(concept["name"], category=concept.get("category", "Entity"))
+
+    # Add relationships between nodes that are now in the graph
+    for rel in relationships:
         if rel["from"] in concept_graph.nodes and rel["to"] in concept_graph.nodes:
-            concept_graph.add_edge(
-                rel["from"],
-                rel["to"],
-                relationship=rel["type"]
-            )
+            concept_graph.add_edge(rel["from"], rel["to"], relationship=rel["type"])
 
 def render_graph():
     """
@@ -314,19 +340,9 @@ def render_graph():
     # Use spring layout for nice node positioning
     pos = nx.spring_layout(concept_graph, k=2, iterations=50, seed=42)
     
-    # Color nodes by category
-    category_colors = {
-        "Theory": "#FF6B6B",
-        "Method": "#4ECDC4",
-        "Entity": "#45B7D1",
-        "Property": "#FFA07A",
-        "Process": "#98D8C8",
-        "Domain": "#F7DC6F",
-        "Unknown": "#95A5A6"
-    }
-    
+    # Color nodes by category (shared constant keeps graph + chat display in sync)
     node_colors = [
-        category_colors.get(concept_graph.nodes[node].get("category", "Unknown"), "#95A5A6")
+        CATEGORY_COLORS.get(concept_graph.nodes[node].get("category", "Unknown"), "#95A5A6")
         for node in concept_graph.nodes
     ]
     
@@ -373,16 +389,28 @@ def render_graph():
     ax.set_title("Concept Map", fontsize=16, fontweight='bold', pad=20)
     ax.axis('off')
     
-    # Add legend
+    # Legend — horizontal strip below the graph so it never overlaps nodes
     legend_elements = [
-        plt.Line2D([0], [0], marker='o', color='w', 
-                   markerfacecolor=color, markersize=10, label=category)
-        for category, color in category_colors.items()
+        plt.Line2D([0], [0], marker='o', color='w',
+                   markerfacecolor=color, markersize=14,
+                   markeredgewidth=0.5, markeredgecolor='#aaaaaa',
+                   label=category)
+        for category, color in CATEGORY_COLORS.items()
         if category != "Unknown"
     ]
-    ax.legend(handles=legend_elements, loc='upper left', fontsize=8)
-    
-    plt.tight_layout()
+    ax.legend(
+        handles=legend_elements,
+        loc='upper center',
+        bbox_to_anchor=(0.5, -0.02),  # just below the axes
+        ncol=len(legend_elements),    # all categories in one row
+        fontsize=11,
+        framealpha=0.95,
+        edgecolor='#cccccc',
+        fancybox=True,
+    )
+
+    # Leave 10 % of figure height at the bottom for the legend strip
+    fig.tight_layout(rect=[0, 0.10, 1, 1])
     return fig
 
 def clear_graph():
@@ -564,6 +592,9 @@ with gr.Blocks(title="Concept Cartographer") as demo:
                 show_label=True,
             )
 
+            # Latest connections panel — hidden until first response
+            connections_display = gr.Markdown(value="", visible=False)
+
             # Stats and counter on same line
             with gr.Row():
                 usage_display = gr.HTML(value=build_usage_stats_html(), scale=2)
@@ -642,7 +673,8 @@ with gr.Blocks(title="Concept Cartographer") as demo:
                 build_usage_stats_html(),
                 build_turn_counter_html(current_turn_count),
                 gr.update(interactive=False),  # Keep textbox disabled
-                gr.update(interactive=False)   # Keep button disabled
+                gr.update(interactive=False),  # Keep button disabled
+                gr.update(),                   # Leave connections panel unchanged
             )
 
         # Guard: history must have at least [user_msg, pending_"..."] at the tail
@@ -664,6 +696,7 @@ with gr.Blocks(title="Concept Cartographer") as demo:
                 build_turn_counter_html(current_turn_count),
                 gr.update(),
                 gr.update(),
+                gr.update(),  # Leave connections panel unchanged
             )
 
         # Get the last user message (second to last, since last is the pending ellipsis).
@@ -677,16 +710,13 @@ with gr.Blocks(title="Concept Cartographer") as demo:
             lens_suffix = f" — {current_domain} lens"
             message = display_content.removesuffix(lens_suffix)
 
-        # Get bot response (single structured call — returns formatted display text)
-        display_text = chat_and_extract(message, chat_history[:-2], current_domain)
+        # Get bot response — returns (narrative_text, connections_markdown)
+        display_text, connections_md = chat_and_extract(message, chat_history[:-2], current_domain)
 
-        # Replace the pending ellipsis placeholder with the formatted response.
-        # Store the narrative portion so subsequent turns send only the concise
-        # narrative as history context, not the full concept inventory.
+        # Replace the pending ellipsis placeholder with the narrative.
+        # Store it as raw_summary too so subsequent turns send concise context.
         chat_history[-1]["content"] = display_text
-        # Narrative is everything before the 📍 concept line
-        raw_narrative = display_text.split("\n📍")[0].strip()
-        chat_history[-1]["raw_summary"] = raw_narrative
+        chat_history[-1]["raw_summary"] = display_text.strip()
 
         # Increment turn counter
         current_turn_count += 1
@@ -713,8 +743,9 @@ with gr.Blocks(title="Concept Cartographer") as demo:
             render_graph(),
             build_usage_stats_html(),
             build_turn_counter_html(current_turn_count),
-            gr.update(interactive=not inputs_disabled),  # Disable msg textbox
-            gr.update(interactive=not inputs_disabled)   # Disable submit button
+            gr.update(interactive=not inputs_disabled),                        # msg textbox
+            gr.update(interactive=not inputs_disabled),                        # submit button
+            gr.update(value=connections_md, visible=bool(connections_md)),     # connections panel
         )
     
     def clear_all():
@@ -729,10 +760,11 @@ with gr.Blocks(title="Concept Cartographer") as demo:
             clear_graph(),  # Empty graph
             build_usage_stats_html(),
             build_turn_counter_html(0),
-            gr.update(interactive=True),  # Re-enable msg
-            gr.update(interactive=True),  # Re-enable submit
-            "",                            # Reset last_prompt state
-            gr.update(visible=False),      # Hide reuse button
+            gr.update(interactive=True),           # Re-enable msg
+            gr.update(interactive=True),           # Re-enable submit
+            "",                                    # Reset last_prompt state
+            gr.update(visible=False),              # Hide reuse button
+            gr.update(value="", visible=False),    # Hide connections panel
         )
     
     def show_export():
@@ -757,7 +789,7 @@ with gr.Blocks(title="Concept Cartographer") as demo:
     ).then(
         respond,
         inputs=[chatbot, domain],
-        outputs=[chatbot, graph_plot, usage_display, turn_counter, msg, submit_btn],
+        outputs=[chatbot, graph_plot, usage_display, turn_counter, msg, submit_btn, connections_display],
         show_progress="minimal"
     )
 
@@ -774,7 +806,7 @@ with gr.Blocks(title="Concept Cartographer") as demo:
     ).then(
         respond,
         inputs=[chatbot, domain],
-        outputs=[chatbot, graph_plot, usage_display, turn_counter, msg, submit_btn],
+        outputs=[chatbot, graph_plot, usage_display, turn_counter, msg, submit_btn, connections_display],
         show_progress="minimal"
     )
     reuse_btn.click(
@@ -805,7 +837,7 @@ with gr.Blocks(title="Concept Cartographer") as demo:
         ).then(
             respond,
             inputs=[chatbot, domain],
-            outputs=[chatbot, graph_plot, usage_display, turn_counter, msg, submit_btn],
+            outputs=[chatbot, graph_plot, usage_display, turn_counter, msg, submit_btn, connections_display],
             show_progress="minimal",
         )
 
@@ -833,7 +865,7 @@ with gr.Blocks(title="Concept Cartographer") as demo:
     
     clear_btn.click(
         clear_all,
-        outputs=[chatbot, graph_plot, usage_display, turn_counter, msg, submit_btn, last_prompt, reuse_btn],
+        outputs=[chatbot, graph_plot, usage_display, turn_counter, msg, submit_btn, last_prompt, reuse_btn, connections_display],
         show_progress="minimal"
     )
     
@@ -865,13 +897,14 @@ with gr.Blocks(title="Concept Cartographer") as demo:
             build_turn_counter_html(0),
             gr.update(interactive=True),
             gr.update(interactive=True),
-            "",                            # Reset last_prompt
-            gr.update(visible=False),      # Hide reuse button
+            "",                                    # Reset last_prompt
+            gr.update(visible=False),              # Hide reuse button
+            gr.update(value="", visible=False),    # Hide connections panel
         )
 
     demo.load(
         reset_on_load,
-        outputs=[chatbot, graph_plot, usage_display, turn_counter, msg, submit_btn, last_prompt, reuse_btn],
+        outputs=[chatbot, graph_plot, usage_display, turn_counter, msg, submit_btn, last_prompt, reuse_btn, connections_display],
         show_progress="minimal"
     )
 
@@ -891,7 +924,7 @@ if __name__ == "__main__":
     demo.launch(
         head=FAVICON_HEAD + ga_head,  # Combine favicon and GA tracking
         server_name="0.0.0.0",
-        server_port=7870,
+        server_port=7860,
 #        share=True,
         show_error=True,
         theme=gr.themes.Soft(),  # Moved here for Gradio 6.0
