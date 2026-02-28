@@ -33,14 +33,14 @@ PENDING_ASSISTANT_TEXT = "..."
 # Domain-specific example prompts — curated for graph variety and "aha" moments
 DOMAIN_EXAMPLES: dict[str, list[str]] = {
     "AI/ML": [
-        "How do neural networks learn?",
+        "What makes a RAG pipeline fail?",
         "Explain attention mechanisms in transformers",
-        "What is transfer learning?",
-        "How does reinforcement learning work?",
+        "Explain a neural net and describe how it learns",
+        "Define reinforcement learning and how RL is commonly applied",
     ],
     "Cognitive Science": [
-        "How does working memory differ from long-term memory?",
-        "What is the dual-process theory of thinking?",
+        "Define dual-process theory and how it explains human cognition",
+        "What main questions do Cognitive psychologists try to answer and how?",
         "How do bilinguals switch between languages?",
         "What role does attention play in perception?",
     ],

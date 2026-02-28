@@ -32,25 +32,26 @@ The key is a deterministic function of **every input that affects the output**:
 | Input | Why it's in the key |
 |---|---|
 | `model` | Different models produce different responses |
-| `system_prompt` | Contains the domain lens + max_concepts cap |
+| `system_prompt` | Contains the domain lens and extraction rules |
 | `user_msg` | The actual question |
 | `domain` | Redundant with system_prompt, but cheap insurance |
 
 #### Cache Value
 
-Each entry stores two things:
+Each entry stores three things:
 
 ```python
 {
-    "display": "The formatted markdown shown in the conversation window",
-    "extraction": {
-        "concepts": [...],      # The ontology nodes
-        "relationships": [...]  # The ontology edges
-    }
+    "display":     "Narrative paragraph shown in the chat bubble",
+    "extraction":  {
+        "concepts":       [...],  # Ontology nodes → consumed by update_graph()
+        "relationships":  [...]   # Ontology edges → consumed by update_graph()
+    },
+    "connections": "Markdown for the 🔗 Latest Connections panel"
 }
 ```
 
-The display text and extraction are stored separately because they serve different consumers: the Chatbot component renders `display`, while `update_graph()` consumes `extraction`.
+`display` and `connections` serve the UI; `extraction` feeds the graph. Stored separately so each consumer gets exactly what it needs.
 
 #### When the Cache Is Checked
 
@@ -62,26 +63,21 @@ if is_first_turn:
     key = _cache_key(CHAT_MODEL, system_prompt, message, domain)
     cache_hit = _response_cache.get(key)
     if cache_hit:
-        update_graph(cache_hit["extraction"])  # Still updates the graph
-        return cache_hit["display"]            # Skips API entirely
+        update_graph(cache_hit["extraction"])
+        return cache_hit["display"], cache_hit.get("connections", "")
 ```
+
+Note that `chat_and_extract()` returns a **tuple** `(display_text, connections_md)` — both on cache hit and on a fresh API call.
 
 #### Why First-Turn Only?
 
 With no conversation history, the same inputs always produce a functionally equivalent output (modulo temperature randomness, which is acceptable). Once there's history, the response depends on prior turns — making the cache key space explode and hit rates drop to near zero.
 
-#### The Subtle Interaction with `adaptive_concept_cap`
+#### Cache Key Stability
 
-The system prompt includes a `max_concepts` value that changes based on graph size:
+The system prompt is now **stable within a domain session** — it no longer includes a `max_concepts` value that varied with graph size. This means cache hits are fully consistent: asking the same first-turn question in the same domain always hits the cache, regardless of how large the graph has grown.
 
-```python
-existing_node_count = len(concept_graph.nodes)
-max_concepts = adaptive_concept_cap(existing_node_count)
-# 0-24 nodes → cap 12,  25-59 nodes → cap 8,  60+ nodes → cap 6
-system_prompt = _build_system_prompt(domain, max_concepts)
-```
-
-Since `max_concepts` is baked into the system prompt, and the system prompt is part of the cache key, **the cache naturally invalidates when the graph grows past a threshold**. On a fresh session (graph is empty, cap = 12), the first-turn cache will always hit. This is the intended behavior.
+Concept filtering is handled **post-extraction** in `update_graph()` via `GRAPH_FREE_GROWTH_THRESHOLD = 30`, not in the prompt. Above that threshold, only concepts that connect to an already-existing node are admitted to the graph — keeping it coherent rather than accumulating disconnected islands. If an entire extraction is disconnected (topic pivot), all concepts are added anyway to avoid a confusing no-op.
 
 #### What the Cache Does NOT Do
 
@@ -217,7 +213,7 @@ Not all questions produce good graphs. From testing, the best example prompts sh
 
 **It's a strong portfolio piece that gains value from being open.** Here's why:
 
-**Differentiated positioning.** Most LLM demo repos are thin wrappers — "chat with PDF," "talk to your database." Concept Cartographer does something structurally different: it makes implicit knowledge structures explicit. The single-call JSON architecture, the adaptive concept cap, the domain-lens system — these are design decisions worth studying, not just code worth running. Open-sourcing lets people see the thinking, which is the real showcase for someone positioning as an AI solutions consultant.
+**Differentiated positioning.** Most LLM demo repos are thin wrappers — "chat with PDF," "talk to your database." Concept Cartographer does something structurally different: it makes implicit knowledge structures explicit. The single-call JSON architecture, the post-hoc graph filtering strategy (`GRAPH_FREE_GROWTH_THRESHOLD`), the domain-lens system — these are design decisions worth studying, not just code worth running. Open-sourcing lets people see the thinking, which is the real showcase for someone positioning as an AI solutions consultant.
 
 **Community as signal.** Stars, forks, and issues on a public repo are social proof that carries weight in hiring conversations and consulting pitches. "I built a tool that 200 people starred" is more compelling than "I built a tool."
 
