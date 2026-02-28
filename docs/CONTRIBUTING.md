@@ -23,12 +23,12 @@ Concept Cartographer aims to bridge natural language conversation with formal kn
 
 ```bash
 # Fork and clone the repository
-git clone https://github.com/yourusername/concept-cartographer.git
+git clone https://github.com/dagny099/concept-cartographer.git
 cd concept-cartographer
 
 # Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
+python3 -m .venv venv
+source .venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
@@ -46,9 +46,9 @@ python concept_cartographer.py
 ### 1. Create a Branch
 
 ```bash
-git checkout -b feature/your-feature-name
+git checkout -b feature/new-feature-name
 # or
-git checkout -b bugfix/issue-description
+git checkout -b bugfix/new-issue-description
 ```
 
 ### 2. Make Changes
@@ -85,7 +85,7 @@ git commit -m "Brief description of changes"
 ### 5. Push and Create PR
 
 ```bash
-git push origin feature/your-feature-name
+git push origin feature/new-feature-name
 ```
 
 Then create a Pull Request on GitHub with:
@@ -217,7 +217,6 @@ For feature requests, describe:
 - [ ] Keyboard shortcuts (Enter to send, Ctrl+K to clear)
 
 ### Medium Effort
-- [ ] Support for Anthropic Claude API
 - [ ] Export to additional formats (GraphML, PNG, SVG)
 - [ ] Interactive graph (zoom, pan, click nodes)
 - [ ] Undo/redo functionality
@@ -234,9 +233,8 @@ For feature requests, describe:
 When adding features:
 
 1. **Update README.md** if user-facing
-2. **Update CLAUDE.md** with technical insights
-3. **Add inline comments** for complex logic
-4. **Write docstrings** for all functions
+2. **Add inline comments** for complex logic
+3. **Write docstrings** for all functions
 
 ### Documentation Style
 
@@ -297,10 +295,9 @@ When your PR is submitted:
 
 ## 📧 Questions?
 
-- **Technical questions**: See CLAUDE.md or open a discussion
+- **General questions**: Start a discussion on GitHub
 - **Bug reports**: Open an issue
 - **Feature ideas**: Open an issue with "Feature Request" label
-- **General questions**: Start a discussion on GitHub
 
 ## 🙏 Thank You
 
@@ -311,8 +308,8 @@ Every contribution helps make Concept Cartographer better. Whether it's:
 - Adding a feature
 - Improving documentation
 
-Your effort is appreciated! 🎉
+Your effort is appreciated by me, Barb! 🎉
 
 ---
 
-**Happy Contributing!** 🗺️
+**Have fun mapping!** 🗺️
