@@ -5,7 +5,7 @@
 Concept Cartographer is a Gradio app that turns a chat into a growing *concept map*: it extracts key concepts and relationships from your conversation and renders them as a knowledge graph you can export.
 
 - **Repo:** https://github.com/dagny099/concept-cartography-gradio  
-- **Live demo:** https://ce668c1e9bcc6265ae.gradio.live/  
+- **Live demo:** https://concept-cartographer.com/
 - **Built by:** Barbara Hidalgo-Sotelo (Cognitive Science + AI)  
 - **LinkedIn:** https://www.linkedin.com/in/barbara-hidalgo-sotelo/
 
@@ -16,10 +16,11 @@ Concept Cartographer is a Gradio app that turns a chat into a growing *concept m
 As you chat, the app:
 
 1. **Responds conversationally** to your question
-2. **Extracts structured concepts + relationships** from the conversation
+2. **Extracts structured concepts + relationships** from the conversation (single LLM call — fast and cheap)
 3. **Updates a persistent graph** across turns
-4. **Visualizes the graph** in real time
-5. Lets you **export the graph as JSON** for downstream use (Neo4j, notes, outlines, retrieval, etc.)
+4. **Visualizes the graph** in real time with a color-coded legend
+5. Shows **key connections** in plain language below the conversation
+6. Lets you **export the graph as JSON or PNG** for downstream use (Neo4j, notes, outlines, presentations, etc.)
 
 This is intentionally a “small, sharp demo” focused on *stateful* LLM tooling (not just a stateless chatbot).
 
@@ -53,28 +54,29 @@ cp .env.example .env
 python concept_cartographer.py
 ```
 
-The app starts at `http://localhost:7860`. If Gradio sharing is enabled, you’ll also see a public `gradio.live` link printed to the console.
+The app starts at `http://localhost:7870`. If Gradio sharing is enabled, you’ll also see a public `gradio.live` link printed to the console.
 
 ---
 
 ## Versions
 
-This project is currently developed and tested on **Gradio 6.6**.
+This project is currently developed and tested on **Gradio 6.5.1** (pinned in `requirements.txt`).
 
-If you run into UI differences across Gradio versions, pin Gradio explicitly:
+If you run into UI differences across Gradio versions, pin explicitly:
 ```bash
-pip install "gradio==6.6"
+pip install "gradio==6.5.1"
 ```
 
 ---
 
 ## How to use
 
-1. Pick a **Domain** (e.g., AI/ML or Cognitive Science).  
+1. Pick a **Domain** (e.g., AI/ML or Cognitive Science).
    Domain selection nudges extraction toward domain-relevant concepts and relation types.
 2. Ask a question (or click a starter prompt).
 3. Watch the **Knowledge Graph** grow as you continue the conversation.
-4. Use **Export Graph JSON** to download the current graph state.
+4. Check the **🔗 Latest Connections** panel below the chat for a plain-language summary of what was just extracted.
+5. Use **Export Graph JSON** or **Export Graph PNG** to download the current graph state.
 
 ---
 
@@ -89,11 +91,18 @@ The export is meant to be easy to pipe into other workflows. Expect:
 
 ## Architecture (high level)
 
-Concept Cartographer makes **two LLM calls per user turn**:
-- **Chat call** → generates a helpful response
-- **Extraction call** → returns structured JSON (concepts + relations) that updates the graph
+Concept Cartographer makes a **single LLM call per user turn**, returning a structured JSON response that contains both a conversational narrative and the extracted ontology (concepts + relationships) simultaneously. This is ~50% faster and cheaper than a two-call approach.
 
-The graph is held in app state and re-rendered each turn.
+The response shape:
+```json
+{
+  "narrative":      "A 2-4 sentence explanation woven from the extracted concepts",
+  "concepts":       [{"name": "...", "category": "Entity|Process|Theory|Method|Property"}],
+  "relationships":  [{"from": "...", "to": "...", "type": "causes|requires|enables|..."}]
+}
+```
+
+The graph is held in app state and re-rendered each turn. New concepts are filtered before being added: once the graph exceeds 30 nodes, only concepts that connect to an existing node are admitted — keeping the graph coherent rather than creating disconnected islands.
 
 ---
 

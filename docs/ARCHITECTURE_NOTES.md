@@ -234,6 +234,12 @@ Not all questions produce good graphs. From testing, the best example prompts sh
 **Maintenance burden.** Open-source repos that go quiet look worse than no repo at all.
 → *Mitigation:* Set expectations in the README: "This is a portfolio project and learning tool. Issues and PRs welcome but response times may vary." Honest framing prevents disappointment.
 
+### Recommended Launch Checklist
+
+- [ ] **Choose a license** (recommend MIT for your use case)
+- [ ] **Write a README** that leads with a screenshot/GIF of the app in action — visual-first, code-second
+- [ ] **Tag a release** (v1.0.0) so people can pin to a stable version
+- [ ] **Add the 30-second demo** — this is the single highest-ROI asset for a repo like this. Tools like [Gifski](https://gif.ski/) or screen recording → GIF conversion make this easy
 
 ## Few Other Customization Ideas I like:
 
