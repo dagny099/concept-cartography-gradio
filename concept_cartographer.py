@@ -843,15 +843,16 @@ with gr.Blocks(title="Concept Cartographer") as demo:
 
 if __name__ == "__main__":
     # Google Analytics tracking code                                                                                                                    
-    ga_head = """                                                                                                                                       
-    <!-- Google tag (gtag.js) -->                                                                                                                       
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-489875302"></script>                                                               
-    <script>                                                                                                                                            
-    window.dataLayer = window.dataLayer || [];                                                                                                        
-    function gtag(){dataLayer.push(arguments);}                                                                                                       
-    gtag('js', new Date());                                                                                                                           
-    gtag('config', 'G-489875302');                                                                                                                    
-    </script>                                                                                                                                           
+    ga_head = """
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-L6YCXDDRF7"></script>
+    <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'G-L6YCXDDRF7');
+    </script>
     """                                                                                                                                                 
   
     demo.launch(
